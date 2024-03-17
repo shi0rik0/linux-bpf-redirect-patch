@@ -2477,11 +2477,39 @@ int skb_do_redirect(struct sk_buff *skb)
 	struct net_device *dev;
 	u32 flags = ri->flags;
 
-	dev = dev_get_by_index_rcu(net, ri->tgt_index);
+	if (flags & BPF_F_C2C) {
+		const struct net_device_ops *ops;
+		struct net *net_main;
+
+		if (unlikely(skb_at_tc_ingress(skb)))
+			goto out_drop;
+		ops = skb->dev->netdev_ops;
+		if (unlikely(!ops->ndo_get_peer_dev))
+			goto out_drop;
+		dev = ops->ndo_get_peer_dev(skb->dev);
+		if (unlikely(!dev))
+			goto out_drop;
+		net_main = dev_net(dev);
+		if (unlikely(net_eq(net_main, net)))
+			goto out_drop;
+		dev = dev_get_by_index_rcu(net_main, ri->tgt_index);
+		if (unlikely(!dev))
+			goto out_drop;
+		ops = dev->netdev_ops;
+		if (unlikely(!ops->ndo_get_peer_dev))
+			goto out_drop;
+		dev = ops->ndo_get_peer_dev(dev);
+		if (unlikely(!dev))
+			goto out_drop;
+	} else {
+		dev = dev_get_by_index_rcu(net, ri->tgt_index);
+		if (unlikely(!dev))
+			goto out_drop;
+	}
+
 	ri->tgt_index = 0;
 	ri->flags = 0;
-	if (unlikely(!dev))
-		goto out_drop;
+
 	if (flags & BPF_F_PEER) {
 		const struct net_device_ops *ops = dev->netdev_ops;
 
@@ -2509,8 +2537,11 @@ BPF_CALL_2(bpf_redirect, u32, ifindex, u64, flags)
 {
 	struct bpf_redirect_info *ri = this_cpu_ptr(&bpf_redirect_info);
 
-	if (unlikely(flags & (~(BPF_F_INGRESS) | BPF_F_REDIRECT_INTERNAL)))
+	if (unlikely(flags & (~(BPF_F_INGRESS | BPF_F_C2C) | BPF_F_REDIRECT_INTERNAL)))
 		return TC_ACT_SHOT;
+
+	if (flags & BPF_F_C2C)
+		flags |= BPF_F_INGRESS;
 
 	ri->flags = flags;
 	ri->tgt_index = ifindex;

@@ -1,0 +1,4 @@
+[submodule "libbpf-bootstrap"]
+	path = libbpf-bootstrap
+	url = https://github.com/shi0rik0/libbpf-bootstrap.git
+	branch = redirect
